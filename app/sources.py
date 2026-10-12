@@ -22,6 +22,8 @@ import requests
 
 log = logging.getLogger("sources")
 UA = {"User-Agent": "espn-fantasy-bot (personal use)"}
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/129.0 Safari/537.36")
 
 # ESPN pro team abbreviations -> Sleeper's
 TO_SLEEPER = {"WSH": "WAS"}
@@ -202,14 +204,15 @@ class Sources:
 
         # Vegas lines + domes from ESPN's public scoreboard
         try:
-            sb = self._cached(f"scoreboard_{season}_{week}.json", 2 * 3600, lambda: self._get(
-                "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard",
-                params={"week": week, "seasontype": 2, "dates": season}))
+            sb = self._cached(f"scoreboard_{season}_{week}.json", 2 * 3600, lambda: self._scoreboard(season, week))
             self._parse_scoreboard(sb, ex)
+            self._remember_lines(season, week, ex)  # lines vanish once games finish; keep the last ones seen
             if any(e.implied for e in ex.env.values()):
                 ex.used.append("Vegas lines")
+            elif ex.env:
+                ex.failed["Vegas lines"] = "no betting lines posted for this week's games"
         except Exception as e:
-            ex.failed["Vegas lines"] = str(e)[:120]
+            ex.failed["Vegas lines"] = f"{type(e).__name__}: {e}"[:160]
 
         # weather at outdoor stadiums, for games in the next 7 days
         try:
@@ -221,6 +224,46 @@ class Sources:
         return ex
 
     # ---- Vegas ------------------------------------------------------------------
+    def _scoreboard(self, season: int, week: int) -> dict:
+        """ESPN's public scoreboard. Tries a few URL forms, because ESPN is picky about them."""
+        url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+        hdr = {"User-Agent": BROWSER_UA, "Accept": "application/json"}
+        errors = []
+        for params in ({"seasontype": 2, "week": week, "dates": season},
+                       {"seasontype": 2, "week": week},
+                       {}):
+            try:
+                r = self.s.get(url, params=params, headers=hdr, timeout=30)
+                r.raise_for_status()
+                data = r.json()
+                evs = data.get("events") or []
+                wk = (data.get("week") or {}).get("number")
+                if evs and (params or wk == week):  # the plain URL is only good if it's this week
+                    return data
+                errors.append(f"{params or 'current'}: {len(evs)} games, week {wk}")
+            except Exception as e:
+                errors.append(f"{params or 'current'}: {e}")
+        raise RuntimeError("; ".join(errors)[:300])
+
+    def _remember_lines(self, season: int, week: int, ex: "Extras"):
+        path = os.path.join(self.dir, f"lines_{season}_{week}.json")
+        try:
+            with open(path) as f:
+                saved = json.load(f)
+        except (OSError, ValueError):
+            saved = {}
+        changed = False
+        for team, e in ex.env.items():
+            if e.implied:
+                if saved.get(team) != [e.implied, e.opp_implied, e.spread, e.total]:
+                    saved[team] = [e.implied, e.opp_implied, e.spread, e.total]
+                    changed = True
+            elif team in saved:
+                e.implied, e.opp_implied, e.spread, e.total = saved[team]
+        if changed:
+            with open(path, "w") as f:
+                json.dump(saved, f)
+
     @staticmethod
     def _parse_scoreboard(sb: dict, ex: Extras):
         for ev in sb.get("events", []):
@@ -240,8 +283,12 @@ class Sources:
                 e.kickoff = kickoff
                 e.home_team = home
                 e.neutral = bool(comp.get("neutralSite"))
-            odds = (comp.get("odds") or [{}])[0]
+            odds = (comp.get("odds") or [{}])[0] or {}
             total = odds.get("overUnder")
+            try:
+                total = float(total) if total not in (None, "") else None
+            except (TypeError, ValueError):
+                total = None
             details = (odds.get("details") or "").strip()  # e.g. "KC -3.5" or "EVEN"
             if total:
                 fav, line = None, 0.0

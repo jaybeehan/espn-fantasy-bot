@@ -247,13 +247,13 @@ function renderTeam(){
   if(!s){ $("#stats").innerHTML=""; $("#roster").innerHTML = `<div class="empty">${S.error?"Waiting for ESPN access.":"Loading your team…"}</div>`; return }
   const diff = s.opp_proj!=null ? (s.my_proj - s.opp_proj) : null;
   $("#stats").innerHTML = `
-    <div class="stat"><span>Wk ${s.week} projected</span><b>${s.my_proj.toFixed(1)}</b></div>
+    <div class="stat"><span>Wk ${s.week} score + proj</span><b>${s.my_proj.toFixed(1)}</b></div>
     <div class="stat"><span>Opponent</span><b style="color:${diff==null?'inherit':diff>=0?'var(--accent)':'var(--bad)'}">${s.opp_proj!=null?s.opp_proj.toFixed(1):"—"}</b></div>
     <div class="stat"><span>${ordinal(s.rank)} of ${s.teams}</span><b>${esc(s.record)}</b></div>`
     + (s.opponent ? `<div class="sources" style="grid-column:1/-1;margin:0">Playing ${esc(s.opponent)} this week${s.faab?` · $${s.faab_left} FAAB left`:""}</div>` : "");
   const src = S.sources;
   $("#sources").innerHTML = src ? "Using: " + src.used.map(esc).join(" · ") +
-    (Object.keys(src.failed||{}).length ? ` <span style="color:var(--warn)">· unavailable: ${Object.keys(src.failed).map(esc).join(", ")}</span>` : "") : "";
+    (Object.keys(src.failed||{}).length ? ` <details style="display:inline"><summary style="display:inline;cursor:pointer;color:var(--warn)">· unavailable: ${Object.keys(src.failed).map(esc).join(", ")} (why?)</summary><div style="margin-top:4px">${Object.entries(src.failed).map(([k,v])=>`<div><b>${esc(k)}:</b> ${esc(v)}</div>`).join("")}</div></details>` : "") : "";
   $("#suggest").innerHTML = (s.suggestions||[]).length ? `<h2>Suggested <small>autopilot is off for these</small></h2><div class="list">${
     s.suggestions.map(x=>`<div class="act"><span class="ic">💡</span><div>${esc(x)}</div></div>`).join("")}</div>` : "";
   const groups = [["Starters", s.roster.filter(p=>p.starting)], ["Bench", s.roster.filter(p=>p.slot==="BE")], ["Injured reserve", s.roster.filter(p=>p.slot==="IR")]];

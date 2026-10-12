@@ -379,8 +379,16 @@ def snapshot(lg, fas, cfg, plan, suggestions):
         d["starting"] = p.slot not in (BENCH, IR)
         roster.append(d)
     opp = lg.teams.get(lg.opponent_id) if lg.opponent_id else None
-    opp_proj = round(brain.lineup_total(lg, opp.roster, o), 1) if opp else None
-    my_proj = round(sum(brain.score(p, o) for p in me.roster if p.slot not in (BENCH, IR)), 1)
+    def live(team):
+        """Points already scored by started players + projections for those still to play."""
+        tot = 0.0
+        for p in team.roster:
+            if p.slot in (BENCH, IR):
+                continue
+            tot += p.week_points if (p.locked and p.week_points is not None) else brain.score(p, o)
+        return round(tot, 1)
+    opp_proj = live(opp) if opp else None
+    my_proj = live(me)
     rostered = {p.id for t in lg.teams.values() for p in t.roster}
     avail = [f for f in fas if f.id not in rostered]
     by_pos = []
