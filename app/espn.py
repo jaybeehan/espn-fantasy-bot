@@ -110,6 +110,52 @@ class EspnClient:
                          fantasy_filter=f)
         return data.get("players", []) if isinstance(data, dict) else []
 
+    def trade_proposals(self, week: int) -> list[dict]:
+        """Pending trade proposals that involve my team (sent to me or by me).
+
+        ESPN keeps these in a couple of places depending on the view, so look in all of them.
+        """
+        found: dict = {}
+
+        def collect(obj):
+            if isinstance(obj, dict):
+                for k in ("pendingTransactions", "transactions"):
+                    for t in obj.get(k) or []:
+                        if isinstance(t, dict) and t.get("id"):
+                            found.setdefault(t["id"], t)
+                for t in obj.get("teams") or []:
+                    if isinstance(t, dict):
+                        for tx in t.get("pendingTransactions") or []:
+                            if isinstance(tx, dict) and tx.get("id"):
+                                found.setdefault(tx["id"], tx)
+
+        errors = []
+        for wk in {week, max(1, week - 1)}:
+            for params, flt in (
+                ({"view": "mPendingTransactions", "scoringPeriodId": wk}, None),
+                ({"view": "mTransactions2", "scoringPeriodId": wk},
+                 {"transactions": {"filterType": {"value": ["TRADE_PROPOSAL"]}}}),
+            ):
+                try:
+                    collect(self._get(self.league_url, params=params, fantasy_filter=flt))
+                except AuthError:
+                    raise
+                except EspnError as e:
+                    errors.append(str(e))
+        if errors and not found:
+            raise EspnError("; ".join(errors[:2]))
+        out = []
+        for t in found.values():
+            if t.get("type") != "TRADE_PROPOSAL":
+                continue
+            if not (t.get("status") in ("PENDING", "PROPOSED") or t.get("isPending")):
+                continue
+            items = [i for i in t.get("items") or [] if i.get("playerId")]
+            if not any(self.team_id in (i.get("fromTeamId"), i.get("toTeamId")) for i in items):
+                continue
+            out.append(t)
+        return out
+
     # ---- writes ----------------------------------------------------------
     def _transaction(self, payload: dict) -> dict:
         url = f"{WRITES}/seasons/{self.season}/segments/0/leagues/{self.league_id}/transactions/"

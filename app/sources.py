@@ -122,7 +122,15 @@ class Sources:
                                  params=[("season_type", "regular")] + [("position[]", p) for p in
                                                                          ("QB", "RB", "WR", "TE", "K", "DEF")])
                 if isinstance(rows, list) and rows:
-                    return {str(r["player_id"]): r.get("stats") or {} for r in rows if r.get("player_id")}
+                    out = {}
+                    for r in rows:
+                        if not r.get("player_id"):
+                            continue
+                        st = dict(r.get("stats") or {})
+                        if r.get("team"):
+                            st["_team"] = r["team"]  # team he played for that week
+                        out[str(r["player_id"])] = st
+                    return out
             except Exception as e:
                 log.info("sleeper %s new endpoint: %s", kind, e)
             data = self._get(f"https://api.sleeper.app/v1/{kind}/nfl/regular/{season}/{week}")
@@ -222,6 +230,55 @@ class Sources:
         except Exception as e:
             ex.failed["weather"] = str(e)[:120]
         return ex
+
+    # ---- points allowed (for fantasy-playoff schedule strength) -------------------
+    def points_allowed(self, season: int, week: int, scoring_key: str, opps: dict) -> tuple[dict, dict, int]:
+        """Fantasy points each NFL defense has allowed per game, by position, this season.
+
+        opps: {team abbrev: {week: opponent abbrev}} from ESPN's schedule.
+        Returns ({defense abbrev: {pos: pts/game}}, {pos: league average}, weeks of data).
+        """
+        players = self.sleeper_players()
+        totals: dict = {}
+        games: dict = {}
+        weeks = 0
+        for w in range(1, week):
+            try:
+                data = self._sleeper_week("stats", season, w, final=w < week - 1)
+            except Exception as e:
+                log.info("points allowed week %s: %s", w, e)
+                continue
+            if not data:
+                continue
+            weeks += 1
+            for sid, st in data.items():
+                info = players.get(sid) or {}
+                pos = info.get("pos") or ("DEF" if sid.isalpha() and sid.isupper() else None)
+                if pos not in ("QB", "RB", "WR", "TE", "K", "DEF"):
+                    continue
+                v = None
+                for k in (scoring_key, "pts_half_ppr", "pts_ppr", "pts_std"):
+                    if st.get(k) is not None:
+                        v = float(st[k])
+                        break
+                if v is None:
+                    continue
+                team = st.get("_team") or info.get("team") or (sid if pos == "DEF" else None)
+                team = FROM_SLEEPER.get(team, team)
+                opp = (opps.get(team) or {}).get(w)
+                if not opp:
+                    continue
+                totals.setdefault(opp, {}).setdefault(pos, 0.0)
+                totals[opp][pos] += v
+                games.setdefault(opp, set()).add(w)
+        allowed = {d: {pos: tot / max(1, len(games.get(d, ()))) for pos, tot in by.items()}
+                   for d, by in totals.items()}
+        avg = {}
+        for pos in ("QB", "RB", "WR", "TE", "K", "DEF"):
+            vals = [by[pos] for by in allowed.values() if pos in by]
+            if vals:
+                avg[pos] = sum(vals) / len(vals)
+        return allowed, avg, weeks
 
     # ---- Vegas ------------------------------------------------------------------
     def _scoreboard(self, season: int, week: int) -> dict:

@@ -62,6 +62,7 @@ class Player:
     env_factor: float = 1.0          # Vegas + weather multiplier
     trending: int = 0                # adds across Sleeper leagues in the last 24h
     notes: list = field(default_factory=list)
+    sos_factor: float = 1.0          # fantasy-playoff schedule multiplier on season value
     opponent: str = ""
     home: bool = True
 
@@ -97,6 +98,7 @@ class Player:
             v = self.proj_avg or self.actual_avg
         if self.recent_avg is not None and v:
             v = 0.8 * v + 0.2 * self.recent_avg   # last 3 weeks count a little extra
+        v *= self.sos_factor
         if self.injury == "INJURY_RESERVE":
             v *= 0.3
         elif self.injury in ("OUT", "SUSPENSION"):
@@ -115,6 +117,7 @@ class Player:
             "espn": None if self.espn_proj is None else round(self.espn_proj, 1),
             "sleeper": None if self.sleeper_proj is None else round(self.sleeper_proj, 1),
             "recent": self.recent_avg, "env": self.env_factor, "trending": self.trending, "notes": self.notes,
+            "sos": round(self.sos_factor, 3),
         }
 
 
@@ -151,6 +154,9 @@ class League:
     final_week: int = 18
     matchup_period: int = 0
     ppr: float = 0.0                  # points per reception (1 = PPR, 0.5 = half)
+    reg_periods: int = 0              # regular-season matchup periods
+    matchup_periods: dict = field(default_factory=dict)  # period -> [scoring weeks]
+    schedule: list = field(default_factory=list)         # raw ESPN matchups (scores, winners)
     acq_limit_per_matchup: int = 0
     raw_status: dict = field(default_factory=dict)
 
@@ -175,6 +181,30 @@ class League:
     @property
     def ir_slots(self) -> int:
         return self.slot_counts.get(IR, 0)
+
+    def period_of(self, week: int) -> int:
+        for mp, weeks in self.matchup_periods.items():
+            if week in weeks:
+                return mp
+        return week
+
+    @property
+    def playoff_weeks(self) -> list[int]:
+        """Scoring weeks of the fantasy playoffs (all periods after the regular season)."""
+        if not self.reg_periods or not self.matchup_periods:
+            return []
+        return sorted(w for mp, ws in self.matchup_periods.items() if mp > self.reg_periods for w in ws)
+
+    def my_matchup(self, period: int) -> dict | None:
+        for m in self.schedule:
+            if m.get("matchupPeriodId") != period:
+                continue
+            h, a = m.get("home") or {}, m.get("away") or {}
+            if h.get("teamId") == self.my_team_id:
+                return {"me": h, "opp": a, "winner": m.get("winner"), "home": True}
+            if a.get("teamId") == self.my_team_id:
+                return {"me": a, "opp": h, "winner": m.get("winner"), "home": False}
+        return None
 
     @property
     def faab_left(self) -> int:
@@ -240,9 +270,10 @@ def parse_player(pj: dict, season: int, week: int, games: dict, now: float, *,
     )
 
 
-def parse_league(data: dict, sched: dict, my_team_id: int, season: int, now: float | None = None) -> League:
+def parse_league(data: dict, sched: dict, my_team_id: int, season: int, now: float | None = None,
+                 week: int | None = None) -> League:
     now = now or time.time()
-    week = data.get("scoringPeriodId") or data.get("status", {}).get("currentMatchupPeriod") or 1
+    week = week or data.get("scoringPeriodId") or data.get("status", {}).get("currentMatchupPeriod") or 1
     games = parse_schedule(sched, week)
     st = data.get("settings", {})
     rs = st.get("rosterSettings", {})
@@ -292,6 +323,9 @@ def parse_league(data: dict, sched: dict, my_team_id: int, season: int, now: flo
         min_bid=acq.get("minimumBid", 0), scoring=st.get("scoringSettings", {}).get("scoringType", ""),
         opponent_id=opp, trade_deadline=(st.get("tradeSettings", {}).get("deadlineDate") or 0) / 1000.0,
         final_week=final_week, matchup_period=period_for_week,
+        reg_periods=int(st.get("scheduleSettings", {}).get("matchupPeriodCount") or 0),
+        matchup_periods={int(k): list(v) for k, v in (st.get("scheduleSettings", {}).get("matchupPeriods") or {}).items()},
+        schedule=data.get("schedule", []) or [],
         ppr=next((float(i.get("points", 0)) for i in st.get("scoringSettings", {}).get("scoringItems", [])
                   if i.get("statId") == 53), 0.0),
         acq_limit_per_matchup=max(0, int(acq.get("matchupAcquisitionLimit") or 0)),
@@ -312,3 +346,20 @@ def parse_free_agents(players_json: list[dict], season: int, week: int, games: d
             p.locked = True
         out.append(p)
     return out
+
+
+def season_schedule(sched_json: dict) -> tuple[dict, dict]:
+    """({team abbrev: {week: opponent abbrev}}, {team abbrev: bye week}) for the whole NFL season."""
+    opps: dict[str, dict[int, str]] = {}
+    byes: dict[str, int] = {}
+    for t in (sched_json or {}).get("settings", {}).get("proTeams", []):
+        ab = PRO_TEAMS.get(t.get("id"), t.get("abbrev", "?"))
+        if t.get("byeWeek"):
+            byes[ab] = int(t["byeWeek"])
+        for wk, games in (t.get("proGamesByScoringPeriod") or {}).items():
+            if not games:
+                continue
+            g = games[0]
+            other = g.get("awayProTeamId") if g.get("homeProTeamId") == t.get("id") else g.get("homeProTeamId")
+            opps.setdefault(ab, {})[int(wk)] = PRO_TEAMS.get(other, "?")
+    return opps, byes

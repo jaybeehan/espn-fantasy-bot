@@ -368,3 +368,170 @@ def _trade_why(a: Player, b: Player, gm: float, gt: float) -> str:
         return (f"You have depth at {a.pos} and need a {b.pos}; they're the opposite. "
                 f"Your lineup +{gm:.1f}/game, theirs +{gt:.1f}/game.")
     return f"Both lineups improve: you +{gm:.1f}/game, them +{gt:.1f}/game."
+
+
+# ---------------------------------------------------------------------------
+# Incoming trade offers
+def evaluate_offer(lg: League, o: Options, other_id: int, give_ids: list[int], get_ids: list[int]) -> dict:
+    """Score a proposed trade for me (and them), by season value and by this week."""
+    me, them = lg.me, lg.teams.get(other_id)
+    if not give_ids and not get_ids:
+        return {"verdict": "unknown", "why": "Couldn't read the players in this offer."}
+    pool = {p.id: p for t in lg.teams.values() for p in t.roster}
+    give = [pool[i] for i in give_ids if i in pool]
+    get = [pool[i] for i in get_ids if i in pool]
+    if len(give) != len(give_ids) or len(get) != len(get_ids) or them is None:
+        return {"verdict": "unknown", "why": "Some players in this offer aren't on the expected rosters anymore."}
+
+    def after(roster, out, inn, size):
+        new = [p for p in roster if p.id not in {x.id for x in out}] + inn
+        dropped = []
+        extra = sum(1 for p in new if p.slot != IR) - size
+        if extra > 0:  # they'd have to drop someone: assume the weakest bench players go
+            cands = sorted([p for p in new if p not in inn and p.slot != IR], key=lambda p: p.value)
+            dropped = cands[:extra]
+            new = [p for p in new if p not in dropped]
+        return new, dropped
+
+    mine_new, my_drops = after(me.roster, give, get, lg.roster_size)
+    their_new, _ = after(them.roster, get, give, lg.roster_size)
+    gm = lineup_total(lg, mine_new, o, by="value") - lineup_total(lg, me.roster, o, by="value")
+    gw = lineup_total(lg, mine_new, o) - lineup_total(lg, me.roster, o)
+    gt = lineup_total(lg, their_new, o, by="value") - lineup_total(lg, them.roster, o, by="value")
+    fillable = can_fill_lineup(lg, mine_new)
+    if not fillable:
+        verdict, head = "decline", "Decline: you couldn't field a full lineup after this trade"
+    elif gm >= 1.0:
+        verdict, head = "accept", f"Accept: your lineup gets better by {gm:.1f} pts/game"
+    elif gm > -0.5:
+        if abs(gm) < 0.05 and abs(gw) < 0.5:
+            verdict, head = "close", "Close call: it doesn't change your starting lineup either way"
+        else:
+            verdict, head = "close", f"Close call: about even for you ({gm:+.1f} pts/game)"
+    else:
+        verdict, head = "decline", f"Decline: your lineup gets worse by {abs(gm):.1f} pts/game"
+    bits = [head + "."]
+    if abs(gw) >= 1:
+        bits.append(f"This week: {gw:+.1f} projected.")
+    if gt > 1 and verdict != "accept":
+        bits.append(f"It helps them more ({gt:+.1f}/game).")
+    if my_drops:
+        bits.append("You'd have to drop " + ", ".join(p.name for p in my_drops) + ".")
+    return {"verdict": verdict, "gain_me": round(gm, 1), "gain_week": round(gw, 1), "gain_them": round(gt, 1),
+            "why": " ".join(bits), "give": [p.to_dict() for p in give], "get": [p.to_dict() for p in get],
+            "team": them.name, "team_id": them.id}
+
+
+# ---------------------------------------------------------------------------
+# Bye weeks ahead
+def _week_lineup(lg: League, roster: list[Player], byes: dict, week: int):
+    """Best lineup for a future week by season value, skipping players on bye that week."""
+    usable = [p for p in roster if p.slot != IR and byes.get(p.pro_team) != week and p.injury != "INJURY_RESERVE"]
+    return fill(lg.starting_slots, usable, key=lambda p: p.value)
+
+
+def bye_outlook(lg: League, byes: dict, ahead: int = 3) -> list[dict]:
+    """For each of the next few weeks: which usual starters are on bye, and any slot nobody can fill."""
+    roster = lg.me.roster
+    usual, _ = fill(lg.starting_slots, [p for p in roster if p.slot != IR and p.injury != "INJURY_RESERVE"],
+                    key=lambda p: p.value)
+    starters = [p for p in usual.values() if p]
+    out = []
+    for w in range(lg.week + 1, min(lg.week + ahead, lg.final_week) + 1):
+        off = [p for p in starters if byes.get(p.pro_team) == w]
+        if not off:
+            continue
+        picks, _ = _week_lineup(lg, roster, byes, w)
+        empty = [SLOT_NAMES.get(lg.starting_slots[i], "?") for i, p in picks.items() if p is None]
+        out.append({"week": w, "off": [f"{p.name} ({p.pos})" for p in off], "empty": empty})
+    return out
+
+
+def plan_bye_cover(lg: League, fas: list[Player], o: Options, byes: dict, adds_this_week: int) -> list[Move]:
+    """Next week a starting spot would be empty because of byes: grab cover now, before others do.
+
+    Kicker and defense are left to the normal weekly streaming.
+    """
+    if adds_this_week >= o.max_adds_week:
+        return []
+    nxt = lg.week + 1
+    if nxt > lg.final_week:
+        return []
+    roster = lg.me.roster
+    picks, _ = _week_lineup(lg, roster, byes, nxt)
+    empty = [lg.starting_slots[i] for i, p in picks.items() if p is None]
+    empty = [s for s in empty if SLOT_NAMES.get(s) not in KICK_DEF]
+    if not empty:
+        return []
+    slot = empty[0]
+    this_week = plan_lineup(lg, o, roster)
+    starting_now = {pid for pid, s in this_week.starters.items() if s not in (BENCH, IR)}
+    next_starters = {p.id for p in picks.values() if p}
+    rostered = {p.id for t in lg.teams.values() for p in t.roster}
+    cands = [f for f in fas if f.status == "FREEAGENT" and not f.locked and f.id not in rostered
+             and ("add", f.id) not in o.failed and slot in f.eligible and byes.get(f.pro_team) != nxt
+             and not f.is_out and f.value > 0]
+    if not cands:
+        return []
+    f = max(cands, key=lambda p: p.value)
+    drops = [d for d in _drop_candidates(lg, roster, o, keep=starting_now | next_starters)
+             if d.pos not in KICK_DEF and d.value <= f.value + 1.0]
+    room = _room(lg, roster) > 0
+    d = None if room else (drops[0] if drops else None)
+    if not room and d is None:
+        return []
+    new = [p for p in roster if not d or p.id != d.id] + [f]
+    if not _within_limits(lg, roster, f, d) or not can_fill_lineup(lg, new):
+        return []
+    sname = SLOT_NAMES.get(slot, "?")
+    why = "open roster spot" if d is None else f"dropped {d.name} ({d.value:.1f} pts/game)"
+    return [Move("FREEAGENT", f, d, f"Bye-week cover: added {f.name} ({f.pos}, {f.pro_team}) because nobody "
+                 f"on your roster can play {sname} in week {nxt}; {why}.", gain=round(f.value, 1))]
+
+
+# ---------------------------------------------------------------------------
+# Fantasy playoff schedule
+POS_KEY = {"QB": "QB", "RB": "RB", "WR": "WR", "TE": "TE", "K": "K", "D/ST": "DEF"}
+
+
+def playoff_weight(lg: League) -> float:
+    """0 until about mid-season, rising to 0.5 by the last regular-season week."""
+    pw = [w for w in lg.playoff_weeks if w >= lg.week]
+    if not pw:
+        return 0.0
+    until = pw[0] - lg.week
+    if lg.week in lg.playoff_weeks:
+        return 0.5
+    return round(max(0.0, min(1.0, (9 - until) / 8)) * 0.5, 3)
+
+
+def playoff_factor(p: Player, lg: League, opps: dict, byes: dict, allowed: dict, avg: dict) -> tuple[float, str]:
+    """How good his fantasy-playoff matchups are: 1.0 = average, <1 tough or a bye."""
+    weeks = [w for w in lg.playoff_weeks if w > lg.week]
+    key = POS_KEY.get(p.pos)
+    if not weeks or not key or not p.pro_team or p.pro_team == "FA":
+        return 1.0, ""
+    vals, tough, easy, bye = [], [], [], []
+    for w in weeks:
+        if byes.get(p.pro_team) == w:
+            vals.append(0.0)
+            bye.append(w)
+            continue
+        opp = (opps.get(p.pro_team) or {}).get(w)
+        a = allowed.get(opp, {}).get(key)
+        if opp is None or a is None or not avg.get(key):
+            vals.append(1.0)
+            continue
+        raw = a / avg[key]
+        f = max(0.8, min(1.2, 1 + 0.5 * (raw - 1)))  # regress toward average; samples are small
+        vals.append(f)
+        (easy if f >= 1.06 else tough if f <= 0.94 else []).append(f"wk{w} {opp}")
+    f = sum(vals) / len(vals)
+    note = ""
+    if bye:
+        note = f"Playoffs: on bye week {', '.join(map(str, bye))}"
+    elif f >= 1.04:
+        note = "Playoffs: easy schedule (" + ", ".join(easy) + ")"
+    elif f <= 0.96:
+        note = "Playoffs: tough schedule (" + ", ".join(tough) + ")"
+    return f, note

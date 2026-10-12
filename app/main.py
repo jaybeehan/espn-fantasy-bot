@@ -16,7 +16,7 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 import brain
 from demo import DemoLeague
 from espn import AuthError, EspnClient, EspnError
-from model import BENCH, IR, SLOT_NAMES, parse_free_agents, parse_league, parse_schedule
+from model import BENCH, IR, SLOT_NAMES, parse_free_agents, parse_league, parse_schedule, season_schedule
 from sources import Sources, adjust
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -52,6 +52,10 @@ DEFAULTS = {
     "faab_pct": 5,
     "notify_moves": True,
     "notify_trades": True,
+    "notify_offers": True,     # push a verdict when someone sends me a trade
+    "notify_recap": True,      # weekly recap push
+    "bye_cover": True,         # pick up cover a few days early when byes leave a hole
+    "playoff_plan": True,      # weigh fantasy-playoff matchups from mid-season
     "protected": [],
     "espn_s2": os.environ.get("ESPN_S2", ""),
     "swid": os.environ.get("SWID", ""),
@@ -197,12 +201,58 @@ def extras_for(lg):
         return None
 
 
-def load(src):
+_allowed_cache = {"key": None, "data": None}
+
+
+def defense_table(lg, opps):
+    """Points each NFL defense allows per position (for playoff schedule strength). Once a day."""
+    key = (SEASON, lg.week, time.strftime("%Y-%m-%d"))
+    if _allowed_cache["key"] != key:
+        if DEMO:
+            from demo import demo_allowed
+            _allowed_cache["data"] = demo_allowed(opps)
+        else:
+            sk = "pts_ppr" if lg.ppr >= 1 else "pts_half_ppr" if lg.ppr >= 0.5 else "pts_std"
+            try:
+                _allowed_cache["data"] = EXTRA.points_allowed(SEASON, lg.week, sk, opps)
+            except Exception as e:
+                log.warning("points allowed: %s", e)
+                _allowed_cache["data"] = ({}, {}, 0)
+        _allowed_cache["key"] = key
+    return _allowed_cache["data"]
+
+
+def apply_playoff_plan(lg, fas, cfg, opps, byes):
+    state["playoff"] = None
+    if not cfg.get("playoff_plan") or not lg.playoff_weeks:
+        return
+    w = brain.playoff_weight(lg)
+    future = [x for x in lg.playoff_weeks if x > lg.week]
+    if w <= 0 or not future:
+        state["playoff"] = {"weeks": lg.playoff_weeks, "weight": 0, "active": False}
+        return
+    allowed, avg, nweeks = defense_table(lg, opps)
+    if nweeks < 3 and not DEMO:
+        allowed, avg = {}, {}  # too little data: only byes count
+    players = [p for t in lg.teams.values() for p in t.roster] + list(fas)
+    for p in players:
+        f, note = brain.playoff_factor(p, lg, opps, byes, allowed, avg)
+        p.sos_factor = round(1 + w * (f - 1), 3)
+        if note:
+            p.notes.append(note)
+    state["playoff"] = {"weeks": lg.playoff_weeks, "weight": w, "active": True}
+
+
+def load(src, cfg=None):
+    cfg = cfg or settings()
     week = src.current_week()
     data = src.league(week)
     sched = pro_schedule(src)
     lg = parse_league(data, sched, TEAM_ID or 1, SEASON)
     games = parse_schedule(sched, lg.week)
+    opps, byes = season_schedule(sched)
+    state["byes"], state["opps"] = byes, opps
+    state["kickoffs"] = sorted({g[0] for g in games.values() if g[0]})
     fas = parse_free_agents(src.available_players(lg.week, size=100), SEASON, lg.week, games)
     ex = extras_for(lg) if USE_EXTRAS else None
     if ex:
@@ -217,6 +267,10 @@ def load(src):
     else:
         state["sources"] = {"used": ["ESPN projections"], "failed": {} if not USE_EXTRAS else {"extras": "unavailable"}}
         state["hot"] = set()
+    try:
+        apply_playoff_plan(lg, fas, cfg, opps, byes)
+    except Exception:
+        log.exception("playoff planning")
     return lg, fas
 
 
@@ -235,7 +289,8 @@ def options(cfg, week) -> brain.Options:
 
 # ---- one cycle --------------------------------------------------------------
 state = {"last_run": None, "next_run": None, "error": None, "running": False, "snapshot": None,
-         "trades": [], "trades_ts": 0, "sources": None, "hot": set()}
+         "trades": [], "trades_ts": 0, "sources": None, "hot": set(), "byes": {}, "opps": {},
+         "kickoffs": [], "offers": [], "offers_ts": 0, "offers_error": None, "playoff": None}
 _run_lock = threading.Lock()
 _run_now = threading.Event()
 
@@ -273,8 +328,10 @@ def run_cycle():
 def _cycle():
     cfg = settings()
     src = source(cfg)
-    lg, fas = load(src)
+    lg, fas = load(src, cfg)
     week = lg.week
+    if not meta_get("first_week"):
+        meta_set("first_week", week)
     if week > lg.final_week:
         state["snapshot"] = snapshot(lg, fas, cfg, None, [])
         return
@@ -308,8 +365,24 @@ def _cycle():
             notify("Pickup failed", f"Couldn't add {m.add.name}: {e}", tags="warning", dedupe_key=f"fa{m.add.id}")
     if allow_up and not fa_moves:
         meta_set("last_upgrade_ts", time.time())  # looked today, nothing worth doing
+
+    # 1b) bye-week cover for next week (Tue-Fri, away from game time)
+    if cfg.get("bye_cover") and not fa_moves and _bye_window(lg):
+        for m in brain.plan_bye_cover(lg, fas, o, state["byes"], adds_this_week(week)):
+            if not cfg.get("auto_fa"):
+                suggestions.append(m.reason.replace("added", "add").replace("dropped", "drop"))
+                continue
+            try:
+                src.add_drop(week, m.add.id, m.drop.id if m.drop else None)
+                log_action(week, "add", m.reason, m.add.id)
+                changed = True
+                if cfg.get("notify_moves"):
+                    notify("Bye-week cover", m.reason, tags="calendar")
+            except EspnError as e:
+                mark(week, "fail-add", m.add.id)
+                log_action(week, "error", f"Couldn't add {m.add.name}: {e}", m.add.id, ok=False)
     if changed:
-        lg, fas = load(src)
+        lg, fas = load(src, cfg)
         o = options(cfg, week)
 
     # 2) lineup
@@ -339,7 +412,7 @@ def _cycle():
                 log_action(week, "error", f"ESPN rejected the lineup change: {e}", ok=False)
                 notify("Lineup change failed", str(e), tags="warning", dedupe_key="lineup" + str(week), every=6 * 3600)
         if changed:
-            lg, fas = load(src)
+            lg, fas = load(src, cfg)
             plan = brain.plan_lineup(lg, o)
     elif plan.moves or plan.ir_moves:
         suggestions += [r.replace("Benched", "Bench").replace("Started", "Start").replace("Moved", "Move")
@@ -350,7 +423,17 @@ def _cycle():
         key = "sugg" + str(week) + "|".join(suggestions)
         notify("Suggested moves", "\n".join(suggestions), tags="bulb", dedupe_key=key, every=7 * 86400)
 
-    # 3) trade ideas (every 6 hours is plenty)
+    # 3) trade offers sent to me (every ~20 minutes)
+    if time.time() - state["offers_ts"] > 20 * 60:
+        check_offers(src, lg, o, cfg)
+
+    # 4) weekly recap once last week is final
+    try:
+        maybe_recap(src, lg, o, cfg)
+    except Exception:
+        log.exception("recap")
+
+    # 5) trade ideas (every 6 hours is plenty)
     if time.time() - state["trades_ts"] > 6 * 3600 or changed or not state["trades"]:
         try:
             state["trades"] = brain.trade_ideas(lg, o)
@@ -364,6 +447,113 @@ def _cycle():
                    f"{', '.join(p['name'] for p in t['get'])}. {t['why']}", tags="handshake",
                    dedupe_key=f"trade-week{week}", every=6 * 86400)
     state["snapshot"] = snapshot(lg, fas, cfg, plan, suggestions)
+
+
+def _bye_window(lg) -> bool:
+    lt = time.localtime()
+    if lt.tm_wday not in (1, 2, 3, 4):  # Tue-Fri
+        return False
+    now = time.time()
+    return not any(p.game_time and now - 4 * 3600 < p.game_time < now + 3 * 3600 for p in lg.me.roster)
+
+
+def check_offers(src, lg, o, cfg):
+    state["offers_ts"] = time.time()
+    try:
+        raw = src.trade_proposals(lg.week)
+        state["offers_error"] = None
+    except AuthError:
+        raise
+    except Exception as e:
+        state["offers_error"] = str(e)[:160]
+        log.warning("trade offers: %s", e)
+        return
+    offers = []
+    me_id = lg.my_team_id
+    for t in raw:
+        items = [i for i in t.get("items") or [] if i.get("playerId")]
+        give = [i["playerId"] for i in items if i.get("fromTeamId") == me_id]
+        get = [i["playerId"] for i in items if i.get("toTeamId") == me_id]
+        others = {i.get("fromTeamId") for i in items} | {i.get("toTeamId") for i in items}
+        others.discard(me_id)
+        others.discard(None)
+        if not others:
+            continue
+        other = others.pop()
+        ev = brain.evaluate_offer(lg, o, other, give, get)
+        ev["id"] = t.get("id")
+        ev["incoming"] = t.get("teamId") != me_id
+        ev["expires"] = (t.get("expirationDate") or 0) / 1000 or None
+        offers.append(ev)
+        if ev["incoming"] and cfg.get("notify_offers") and ev["verdict"] != "unknown":
+            gv = ", ".join(p["name"] for p in ev["give"]) or "nothing"
+            gt = ", ".join(p["name"] for p in ev["get"]) or "nothing"
+            icon = {"accept": "white_check_mark", "close": "scales", "decline": "x"}.get(ev["verdict"], "handshake")
+            sent = notify(f"Trade offer from {ev['team']}", f"You give: {gv}\nYou get: {gt}\n{ev['why']}\n"
+                          "Accept or decline in the ESPN app.", tags=icon, priority="high",
+                          dedupe_key=f"offer-{ev['id']}", every=30 * 86400)
+            if sent:
+                log_action(lg.week, "offer", f"Trade offer from {ev['team']}: you give {gv}, get {gt}. {ev['why']}")
+    state["offers"] = offers
+
+
+def maybe_recap(src, lg, o, cfg):
+    prev = lg.week - 1
+    if prev < 1 or meta_get("recap_done") == f"{SEASON}-{prev}":
+        return
+    period = lg.period_of(prev)
+    weeks = lg.matchup_periods.get(period) or [prev]
+    if prev != max(weeks):  # two-week playoff rounds: recap at the end of the round
+        meta_set("recap_done", f"{SEASON}-{prev}")
+        return
+    m = lg.my_matchup(period)
+    if not m or m.get("winner") in (None, "", "UNDECIDED"):
+        return
+    my_pts, opp_pts = float(m["me"].get("totalPoints") or 0), float(m["opp"].get("totalPoints") or 0)
+    opp = lg.teams.get(m["opp"].get("teamId"))
+    res = "Won" if my_pts > opp_pts else "Lost" if my_pts < opp_pts else "Tied"
+    lines = [f"{res} {my_pts:.1f}–{opp_pts:.1f}" + (f" vs {opp.name}" if opp else "") + "."]
+    # points left on the bench (by actual points)
+    try:
+        old = parse_league(src.league(prev), pro_schedule(src), TEAM_ID or 1, SEASON, week=prev)
+        ros = [p for p in old.me.roster if p.slot != IR]
+        pts = lambda p: p.week_points or 0.0
+        started = sum(pts(p) for p in ros if p.slot not in (BENCH, IR))
+        picks, bench = brain.fill(old.starting_slots, ros, key=pts)
+        best = sum(pts(p) for p in picks.values() if p)
+        left = best - started
+        top = max(ros, key=pts, default=None)
+        if top and pts(top) > 0:
+            lines.append(f"Top scorer: {top.name} {pts(top):.1f}.")
+        if left >= 0.5:
+            missed = max((p for p in ros if p.slot == BENCH), key=pts, default=None)
+            lines.append(f"Left {left:.1f} on the bench" + (f" ({missed.name} scored {pts(missed):.1f})." if missed else "."))
+        else:
+            lines.append("Best possible lineup was started.")
+    except Exception as e:
+        log.warning("recap bench check: %s", e)
+    with db() as con:
+        rows = con.execute("SELECT kind, COUNT(*) n FROM actions WHERE season=? AND week IN (%s) AND ok=1 AND auto=1 "
+                           "GROUP BY kind" % ",".join("?" * len(weeks)), (SEASON, *weeks)).fetchall()
+    c = {r["kind"]: r["n"] for r in rows}
+    did = []
+    if c.get("lineup"):
+        did.append(f"{c['lineup']} lineup change{'s' if c['lineup'] > 1 else ''}")
+    if c.get("add") or c.get("claim"):
+        n = c.get("add", 0) + c.get("claim", 0)
+        did.append(f"{n} pickup{'s' if n > 1 else ''}")
+    if (meta_get("first_week") or 0) <= prev:  # skip for weeks before the bot was running
+        lines.append("Bot made " + (" and ".join(did) if did else "no changes") + ".")
+    me = lg.me
+    standings = sorted(lg.teams.values(), key=lambda t: (t.wins, t.points_for), reverse=True)
+    rank = [t.id for t in standings].index(me.id) + 1
+    lines.append(f"Record {me.wins}-{me.losses}{'-' + str(me.ties) if me.ties else ''}, {rank} of {len(lg.teams)}.")
+    text = " ".join(lines)
+    meta_set("recap_done", f"{SEASON}-{prev}")
+    log_action(prev, "recap", f"Week {prev}: {text}")
+    if cfg.get("notify_recap"):
+        notify(f"Week {prev} recap: {res}", text, tags="bar_chart", dedupe_key=f"recap-{SEASON}-{prev}",
+               every=30 * 86400)
 
 
 # ---- what the page shows ----------------------------------------------------
@@ -409,15 +599,35 @@ def snapshot(lg, fas, cfg, plan, suggestions):
         "slots": [SLOT_NAMES.get(s, str(s)) for s in lg.starting_slots],
         "standings": [{"name": t.name, "rec": f"{t.wins}-{t.losses}", "pf": round(t.points_for, 1), "me": t.id == me.id}
                       for t in standings],
+        "byes": brain.bye_outlook(lg, state.get("byes") or {}),
+        "playoff": state.get("playoff"),
     }
+
+
+GAMEDAY_MINUTES = 5
+PREGAME_WINDOW = 2 * 3600   # inactives come out ~90 minutes before kickoff
+
+
+def next_delay(now=None) -> float:
+    """15 minutes normally; every 5 minutes in the 2 hours before any kickoff (and just after)."""
+    now = now or time.time()
+    normal = POLL_MINUTES * 60
+    ks = state.get("kickoffs") or []
+    if any(k - PREGAME_WINDOW <= now <= k + 10 * 60 for k in ks):
+        return min(normal, GAMEDAY_MINUTES * 60)
+    upcoming = [k - PREGAME_WINDOW for k in ks if k - PREGAME_WINDOW > now]
+    if upcoming:
+        return max(60, min(normal, min(upcoming) - now + 5))
+    return normal
 
 
 def loop():
     time.sleep(3)
     while True:
         run_cycle()
-        state["next_run"] = time.time() + POLL_MINUTES * 60
-        _run_now.wait(POLL_MINUTES * 60)
+        d = next_delay()
+        state["next_run"] = time.time() + d
+        _run_now.wait(d)
         _run_now.clear()
 
 
@@ -463,6 +673,7 @@ def api_state():
         "last_run": state["last_run"], "next_run": state["next_run"], "running": state["running"],
         "error": state["error"], "snapshot": state["snapshot"], "trades": state["trades"],
         "actions": acts, "settings": pub, "sources": state["sources"],
+        "offers": state["offers"], "offers_error": state["offers_error"],
     })
 
 
@@ -471,7 +682,8 @@ def api_state():
 def api_settings():
     body = request.get_json(force=True) or {}
     cur = meta_get("settings", {}) or {}
-    for k in ("auto_lineup", "auto_fa", "stream_kdst", "upgrades", "use_ir", "notify_moves", "notify_trades"):
+    for k in ("auto_lineup", "auto_fa", "stream_kdst", "upgrades", "use_ir", "notify_moves", "notify_trades",
+              "notify_offers", "notify_recap", "bye_cover", "playoff_plan"):
         if k in body:
             cur[k] = bool(body[k])
     if "max_adds_week" in body:

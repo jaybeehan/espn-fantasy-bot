@@ -39,6 +39,21 @@ class DemoLeague:
         teams = list(PRO)
         rnd.shuffle(teams)
         self.bye = set(teams[:4])
+        # byes for the rest of the season: 4 teams a week, weeks 5-14
+        self.bye_week = {}
+        order = teams[4:] + teams[:4]
+        for i, t in enumerate(order):
+            self.bye_week[t] = 7 + i // 4 if i < 28 else self.week
+        for t in teams[:4]:
+            self.bye_week[t] = self.week
+        # opponents for every week (random pairs among teams not on bye)
+        self.season_games = {}
+        for w in range(1, 18):
+            pool = [t for t in PRO if self.bye_week.get(t) != w]
+            rnd.shuffle(pool)
+            for i in range(0, len(pool) - 1, 2):
+                self.season_games.setdefault(w, {})[pool[i]] = pool[i + 1]
+                self.season_games[w][pool[i + 1]] = pool[i]
         playing = teams[4:]
         self.games = {}
         times = [now - 2 * 86400] * 2 + [now + 3600 * 14] * 18 + [now + 3600 * 17] * 6 + [now + 3600 * 21] * 2 + [now + 86400 + 3600 * 21] * 2
@@ -110,10 +125,10 @@ class DemoLeague:
                     break
 
     # ---- ESPN-shaped output ---------------------------------------------
-    def _pjson(self, pid):
+    def _pjson(self, pid, w=None):
         p = dict(self.players[pid])
         avg = p.pop("_avg")
-        y, w = self.season, self.week
+        y, w = self.season, (w or self.week)
         team = p["proTeamId"]
         wk = 0.0 if team in self.bye else max(0.0, avg + ((pid * 7919 + w * 104729) % 100 - 50) / 25.0)
         if p["injuryStatus"] in ("OUT", "INJURY_RESERVE"):
@@ -129,6 +144,10 @@ class DemoLeague:
              "appliedTotal": actual * played, "appliedAverage": actual},
             {"seasonId": y, "scoringPeriodId": w, "statSourceId": 1, "statSplitTypeId": 1, "appliedTotal": round(wk, 2)},
         ]
+        if w < self.week:  # a finished week: actual points
+            p["stats"].append({"seasonId": y, "scoringPeriodId": w, "statSourceId": 0, "statSplitTypeId": 1,
+                               "appliedTotal": round(max(0, wk + ((pid * 31) % 13 - 6)), 1)})
+            return p
         g = self.games.get(team)
         if g and g[0] < time.time():
             p["stats"].append({"seasonId": y, "scoringPeriodId": w, "statSourceId": 0, "statSplitTypeId": 1,
@@ -152,12 +171,16 @@ class DemoLeague:
                 "transactionCounter": {"acquisitionBudgetSpent": 12 * (t % 3), "matchupAcquisitionTotals": {}},
                 "roster": {"entries": [{"playerId": e["id"], "lineupSlotId": e["slot"], "playerPoolEntry": {
                     "id": e["id"], "lineupLocked": self._locked(e["id"]), "rosterLocked": self._locked(e["id"]),
-                    "player": self._pjson(e["id"])}} for e in r]},
+                    "player": self._pjson(e["id"], week)}} for e in r]},
             })
         sched = []
         ids = list(self.rosters)
         for i in range(0, 10, 2):
-            sched.append({"matchupPeriodId": self.week, "home": {"teamId": ids[i]}, "away": {"teamId": ids[i + 1]}})
+            sched.append({"matchupPeriodId": self.week, "home": {"teamId": ids[i]}, "away": {"teamId": ids[i + 1]},
+                          "winner": "UNDECIDED"})
+            a, b = 101.3 + i * 4.1, 96.8 + i * 3.3
+            sched.append({"matchupPeriodId": self.week - 1, "home": {"teamId": ids[i], "totalPoints": a},
+                          "away": {"teamId": ids[(i + 3) % 10], "totalPoints": b}, "winner": "HOME" if a > b else "AWAY"})
         return {
             "id": 534812081, "scoringPeriodId": self.week, "seasonId": self.season,
             "status": {"currentMatchupPeriod": self.week, "finalScoringPeriod": 17, "latestScoringPeriod": self.week},
@@ -166,7 +189,8 @@ class DemoLeague:
                                             "positionLimits": {"1": 4, "2": 8, "3": 8, "4": 3, "5": 3, "16": 3}},
                          "acquisitionSettings": {"isUsingAcquisitionBudget": True, "acquisitionBudget": 100, "minimumBid": 0},
                          "scoringSettings": {"scoringType": "H2H_POINTS"},
-                         "scheduleSettings": {"matchupPeriods": {str(w): [w] for w in range(1, 18)}},
+                         "scheduleSettings": {"matchupPeriods": {str(w): [w] for w in range(1, 18)},
+                                              "matchupPeriodCount": 14, "playoffTeamCount": 4},
                          "tradeSettings": {"deadlineDate": (time.time() + 30 * 86400) * 1000}},
             "teams": teams, "schedule": sched,
         }
@@ -176,10 +200,14 @@ class DemoLeague:
         for t in PRO:
             g = self.games.get(t)
             pg = {}
+            for w, games in self.season_games.items():
+                if w != self.week and t in games:
+                    pg[str(w)] = [{"date": (time.time() + (w - self.week) * 7 * 86400) * 1000,
+                                   "homeProTeamId": t, "awayProTeamId": games[t]}]
             if g:
                 pg[str(self.week)] = [{"date": g[0] * 1000, "homeProTeamId": t if g[2] else g[1],
                                        "awayProTeamId": g[1] if g[2] else t}]
-            out.append({"id": t, "abbrev": PRO[t], "byeWeek": self.week if t in self.bye else 0,
+            out.append({"id": t, "abbrev": PRO[t], "byeWeek": self.bye_week.get(t, 0),
                         "proGamesByScoringPeriod": pg})
         return {"settings": {"proTeams": out}}
 
@@ -193,6 +221,17 @@ class DemoLeague:
                         "lineupLocked": self._locked(pid), "rosterLocked": self._locked(pid),
                         "player": self._pjson(pid)})
         return out
+
+    def trade_proposals(self, week):
+        """One fake offer from team 3: one of their starters for two of mine."""
+        mine = sorted(self.rosters[self.team_id], key=lambda e: -self.players[e["id"]]["_avg"])
+        theirs = sorted(self.rosters[3], key=lambda e: -self.players[e["id"]]["_avg"])
+        give = [e["id"] for e in mine if self.players[e["id"]]["defaultPositionId"] == 3][1:2]
+        get = [e["id"] for e in theirs if self.players[e["id"]]["defaultPositionId"] == 2][1:2]
+        items = [{"type": "TRADE", "playerId": p, "fromTeamId": self.team_id, "toTeamId": 3} for p in give]
+        items += [{"type": "TRADE", "playerId": p, "fromTeamId": 3, "toTeamId": self.team_id} for p in get]
+        return [{"id": "demo-offer-1", "type": "TRADE_PROPOSAL", "status": "PENDING", "teamId": 3,
+                 "items": items, "expirationDate": (time.time() + 2 * 86400) * 1000}]
 
     # ---- writes (applied to the fake league) ------------------------------
     def set_lineup(self, week, moves):
@@ -247,3 +286,11 @@ def demo_extras(dl: "DemoLeague", lg):
                 ex.env[x].wind_mph, ex.env[x].precip_mm = 22.0, 0.4
     ex.used = ["Sleeper projections", "recent form", "trending adds", "Vegas lines", "weather"]
     return ex
+
+
+def demo_allowed(opps):
+    """Fake 'points allowed by defense' table so playoff planning shows up in demo mode."""
+    rnd = random.Random(99)
+    base = {"QB": 18.0, "RB": 24.0, "WR": 33.0, "TE": 9.0, "K": 8.0, "DEF": 7.0}
+    allowed = {t: {pos: v * rnd.uniform(0.75, 1.25) for pos, v in base.items()} for t in PRO.values()}
+    return allowed, base, 5

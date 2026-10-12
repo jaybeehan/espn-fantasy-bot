@@ -15,6 +15,17 @@ with a phone-friendly page to see what it's doing.
   by default, and you can mark players **Never drop**.
 - **Uses the IR spot** for players on injured reserve.
 - **Suggests trades** where both lineups improve. It never sends offers.
+- **Reviews trade offers sent to you**: a push with Accept / Close call / Decline and why
+  (season-long and this week, and who you'd have to drop). You still accept or decline in ESPN.
+- **Checks every 5 minutes in the 2 hours before each kickoff**, when inactives are announced,
+  so a surprise scratch gets swapped in time. 15 minutes the rest of the week.
+- **Weekly recap** after each week: result, top scorer, points left on the bench, what the bot changed.
+- **Looks ahead at bye weeks**: shows which starters are off in the next 3 weeks, and if byes would
+  leave a starting spot empty next week, picks up cover Tue–Fri before other managers do.
+- **Plans for the fantasy playoffs**: from about week 7, player values start to include their
+  matchups in your playoff weeks (points each NFL defense allows to that position, from Sleeper's
+  weekly results), rising to a 50% weight by the end of the regular season. Players on bye in a
+  playoff week are marked down.
 
 **It doesn't just trust ESPN.** Each player's projection blends:
 
