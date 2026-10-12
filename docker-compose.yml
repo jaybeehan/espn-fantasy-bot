@@ -1,0 +1,20 @@
+# Paste this into Synology Container Manager → Project → Create.
+# Your ESPN login codes are NOT entered here: paste them on the page's Settings tab.
+services:
+  fantasy-bot:
+    image: ghcr.io/jaybeehan/espn-fantasy-bot:latest
+    pull_policy: always      # fetch the newest version every time you Build
+    container_name: fantasy-bot
+    restart: unless-stopped
+    ports:
+      - "18480:8080"         # open http://<NAS-IP>:18480
+    volumes:
+      - ./data:/data         # settings, history and cached data live here
+    environment:
+      LEAGUE_ID: "534812081"
+      TEAM_ID: "9"
+      SEASON: "2026"
+      DASH_PASSWORD: "pick-a-password"   # CHANGE: protects the page (any username works)
+      NTFY_URL: ""           # optional: e.g. https://ntfy.sh/some-long-secret-name for phone alerts
+      POLL_MINUTES: "15"
+      TZ: "America/Edmonton"

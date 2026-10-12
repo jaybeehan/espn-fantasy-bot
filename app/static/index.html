@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1720">
+<title>Fantasy Autopilot</title>
+<style>
+:root{
+  --bg:#f4f5f2; --card:#ffffff; --ink:#16201c; --muted:#66716c; --line:#e3e6e1;
+  --accent:#0f7a5c; --accent-soft:#e2f2ec; --warn:#b4540a; --warn-soft:#fbeedd;
+  --bad:#b42318; --bad-soft:#fde8e6; --chip:#eef0ec; --hot:#c2410c; --hot-soft:#ffedd5;
+  --qb:#b42318; --rb:#0f7a5c; --wr:#1f6fb2; --te:#b4540a; --k:#7c5cc4; --dst:#5d6670; --flex:#3d4a45;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0f1720; --card:#17212b; --ink:#e8ede9; --muted:#93a19a; --line:#25313c;
+    --accent:#3fc59a; --accent-soft:#16352c; --warn:#f0a35c; --warn-soft:#3a2716;
+    --bad:#f38b80; --bad-soft:#3b1d1b; --chip:#212d38; --hot:#fb923c; --hot-soft:#3a2312;
+    --qb:#e0645a; --rb:#3fc59a; --wr:#6fb0ea; --te:#f0a35c; --k:#a990ee; --dst:#9aa5b0; --flex:#7d8b85;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
+header{position:sticky;top:0;z-index:5;background:var(--bg);padding:14px 16px 0;
+  padding-top:max(14px,env(safe-area-inset-top))}
+.top{display:flex;align-items:center;gap:10px;max-width:760px;margin:0 auto}
+h1{font-size:19px;margin:0;letter-spacing:-.01em;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.status{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--accent);flex:none}
+.dot.bad{background:var(--bad)} .dot.busy{background:var(--warn)}
+.iconbtn{border:0;background:var(--chip);color:var(--ink);width:36px;height:36px;border-radius:10px;font-size:17px;cursor:pointer;flex:none}
+nav{display:flex;gap:2px;margin:12px auto 0;border-bottom:1px solid var(--line);max-width:760px;overflow-x:auto}
+nav button{flex:1;border:0;background:none;color:var(--muted);font:inherit;font-weight:600;font-size:14px;
+  padding:10px 4px;border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap}
+nav button.on{color:var(--ink);border-bottom-color:var(--accent)}
+main{padding:14px 16px 48px;max-width:760px;margin:0 auto}
+.banner{border-radius:12px;padding:10px 12px;margin-bottom:12px;font-size:14px;display:flex;gap:10px;align-items:center}
+.banner.warn{background:var(--warn-soft);color:var(--warn)}
+.banner.bad{background:var(--bad-soft);color:var(--bad)}
+.banner.info{background:var(--accent-soft);color:var(--accent)}
+.banner button{margin-left:auto;border:0;border-radius:8px;padding:6px 10px;font:inherit;font-weight:600;
+  background:var(--card);color:inherit;cursor:pointer;white-space:nowrap}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.stat{background:var(--card);border-radius:12px;padding:10px 12px;min-width:0}
+.stat b{display:block;font-size:17px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat span{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:18px 2px 8px;
+  display:flex;justify-content:space-between;gap:8px}
+h2 small{text-transform:none;letter-spacing:0;font-weight:400}
+.list{background:var(--card);border-radius:14px;overflow:hidden}
+.row{display:flex;align-items:center;gap:12px;padding:10px 12px;border-top:1px solid var(--line)}
+.row.tap{cursor:pointer}
+.row:first-child{border-top:0}
+.row .main{flex:1;min-width:0}
+.row .name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .sub{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.row .num b{display:block;font-size:16px}
+.row .num span{font-size:11px;color:var(--muted)}
+.row.dim .name,.row.dim .num b{opacity:.55}
+.slot{width:40px;height:36px;border-radius:10px;display:grid;place-items:center;font-size:11px;font-weight:700;color:#fff;flex:none;background:var(--flex)}
+.slot.QB{background:var(--qb)} .slot.RB{background:var(--rb)} .slot.WR{background:var(--wr)} .slot.TE{background:var(--te)}
+.slot.K{background:var(--k)} .slot.DST{background:var(--dst)} .slot.BE,.slot.IR{background:var(--chip);color:var(--muted)}
+.chip{display:inline-block;font-size:11px;padding:1px 7px;border-radius:99px;background:var(--chip);
+  color:var(--muted);margin-left:4px;font-weight:600;vertical-align:1px}
+.chip.inj{background:var(--bad-soft);color:var(--bad)} .chip.q{background:var(--warn-soft);color:var(--warn)}
+.chip.hot{background:var(--hot-soft);color:var(--hot)} .chip.ok{background:var(--accent-soft);color:var(--accent)}
+.detail{padding:4px 12px 12px 64px;font-size:13px;color:var(--muted);border-top:0}
+.detail .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:4px 0 8px}
+.detail .grid div{background:var(--chip);border-radius:8px;padding:6px 8px}
+.detail .grid b{display:block;color:var(--ink);font-variant-numeric:tabular-nums}
+.card{background:var(--card);border-radius:14px;padding:14px;margin-bottom:10px}
+.card h3{margin:0 0 4px;font-size:16px}
+.card p{margin:6px 0 0;font-size:13px;color:var(--muted)}
+.trade{display:grid;grid-template-columns:1fr auto 1fr;gap:10px;align-items:center;margin-top:8px}
+.trade .side div{font-weight:600;font-size:14px}
+.trade .side span{display:block;font-size:12px;color:var(--muted);margin-bottom:2px}
+.trade .arrow{color:var(--muted);font-size:18px}
+.toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;border-top:1px solid var(--line)}
+.toggle:first-child{border-top:0}
+.toggle .t b{display:block;font-weight:600}
+.toggle .t span{font-size:12px;color:var(--muted)}
+.switch{position:relative;width:46px;height:28px;flex:none}
+.switch input{opacity:0;width:0;height:0}
+.switch i{position:absolute;inset:0;background:var(--line);border-radius:99px;transition:.2s;cursor:pointer}
+.switch i::after{content:"";position:absolute;width:22px;height:22px;left:3px;top:3px;background:#fff;
+  border-radius:50%;transition:.2s;box-shadow:0 1px 2px rgba(0,0,0,.25)}
+.switch input:checked + i{background:var(--accent)}
+.switch input:checked + i::after{transform:translateX(18px)}
+select,input[type=number],input[type=text],textarea{border:1px solid var(--line);background:var(--bg);color:var(--ink);
+  border-radius:8px;padding:7px 9px;font:inherit}
+input[type=number]{width:70px;text-align:right}
+textarea{width:100%;min-height:70px;font-size:12px;font-family:ui-monospace,Menlo,monospace;resize:vertical}
+.btn{border:0;border-radius:10px;padding:10px 14px;font:inherit;font-weight:600;background:var(--accent);color:#fff;cursor:pointer}
+.btn.sec{background:var(--chip);color:var(--ink)}
+.seg{display:flex;gap:6px;overflow-x:auto;margin-bottom:10px}
+.seg button{border:0;background:var(--chip);color:var(--muted);font:inherit;font-weight:600;font-size:13px;padding:6px 12px;border-radius:99px;cursor:pointer}
+.seg button.on{background:var(--ink);color:var(--bg)}
+.act{display:flex;gap:10px;padding:10px 12px;border-top:1px solid var(--line);font-size:14px}
+.act:first-child{border-top:0}
+.act .ic{flex:none;width:24px;text-align:center}
+.act .when{font-size:12px;color:var(--muted)}
+.empty{padding:22px 14px;text-align:center;color:var(--muted);font-size:14px}
+.sources{font-size:12px;color:var(--muted);margin:2px 2px 10px}
+ol.help{padding-left:20px;margin:8px 0;font-size:14px} ol.help li{margin:4px 0}
+code{background:var(--chip);border-radius:5px;padding:1px 5px;font-size:12px}
+.hide{display:none!important}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:var(--bg);
+  padding:10px 16px;border-radius:12px;font-size:14px;z-index:20;max-width:90vw}
+</style>
+</head>
+<body>
+<header>
+  <div class="top">
+    <h1 id="title">Fantasy Autopilot</h1>
+    <div class="status"><span class="dot" id="dot"></span><span id="statustext">Loading…</span></div>
+    <button class="iconbtn" id="runbtn" title="Check now" aria-label="Check now">↻</button>
+  </div>
+  <nav id="nav">
+    <button data-tab="team" class="on">Team</button>
+    <button data-tab="activity">Activity</button>
+    <button data-tab="pickups">Pickups</button>
+    <button data-tab="trades">Trades</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+</header>
+<main>
+  <div id="banners"></div>
+
+  <section id="tab-team">
+    <div class="stats" id="stats"></div>
+    <div class="sources" id="sources"></div>
+    <div id="suggest"></div>
+    <div id="roster"></div>
+  </section>
+
+  <section id="tab-activity" class="hide">
+    <h2>What the bot has done</h2>
+    <div class="list" id="actions"></div>
+  </section>
+
+  <section id="tab-pickups" class="hide">
+    <div class="seg" id="posseg"></div>
+    <div class="list" id="fas"></div>
+    <p class="sources">Kickers and defenses are sorted by this week's matchup; everyone else by season value (points per game, blending ESPN, Sleeper and recent form).
+      “This wk” is this week's blended projection. 🔥 = among the most-added players across Sleeper today.</p>
+  </section>
+
+  <section id="tab-trades" class="hide">
+    <p class="sources">Trades where both lineups get better, so the other manager has a reason to say yes.
+      The bot never sends offers. If you like one, propose it in the ESPN app.</p>
+    <div id="trades"></div>
+  </section>
+
+  <section id="tab-settings" class="hide">
+    <h2>ESPN login codes</h2>
+    <div class="card">
+      <div id="cookiestate"></div>
+      <details id="cookiehelp">
+        <summary style="cursor:pointer;font-weight:600;margin-top:6px">How to get them (about 2 minutes, needs a computer once)</summary>
+        <ol class="help">
+          <li>On any computer, open <b>Chrome</b> and log in at <code>fantasy.espn.com</code>.</li>
+          <li>Press <b>F12</b> (or right-click → Inspect). Click the <b>Application</b> tab (it may be behind <b>»</b>).</li>
+          <li>On the left: <b>Storage → Cookies → https://fantasy.espn.com</b>.</li>
+          <li>Find <code>espn_s2</code>, click it, and copy the long <b>Cookie Value</b> shown at the bottom. Paste below.</li>
+          <li>Do the same for <code>SWID</code> (looks like <code>{ABCD1234-…}</code>).</li>
+          <li>Tap <b>Save</b>. They usually last about a year. If they stop working you'll get an alert.</li>
+        </ol>
+        <p style="font-size:13px;color:var(--muted)">They're stored only on your NAS. They let the bot act as you on ESPN, so keep this page's password on.</p>
+      </details>
+      <label style="display:block;margin-top:10px;font-size:13px;font-weight:600">espn_s2</label>
+      <textarea id="s2" placeholder="AEB…%2B…(long)"></textarea>
+      <label style="display:block;margin-top:8px;font-size:13px;font-weight:600">SWID</label>
+      <input type="text" id="swid" style="width:100%" placeholder="{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}">
+      <div style="margin-top:10px"><button class="btn" id="savecookies">Save</button></div>
+    </div>
+
+    <h2>Autopilot</h2>
+    <div class="list" id="toggles"></div>
+
+    <h2>Fine tuning</h2>
+    <div class="list">
+      <div class="toggle"><div class="t"><b>Questionable players</b><span>How to treat a “Q” before game time</span></div>
+        <select id="questionable"><option value="start">Start them</option><option value="cautious">Slight discount</option><option value="sit">Sit if possible</option></select></div>
+      <div class="toggle"><div class="t"><b>Max pickups per week</b><span>The bot's own cap, on top of league rules</span></div>
+        <input type="number" id="max_adds_week" min="0" max="10"></div>
+      <div class="toggle" id="faabrow"><div class="t"><b>Waiver bid</b><span>% of your remaining FAAB per upgrade claim</span></div>
+        <input type="number" id="faab_pct" min="0" max="50"></div>
+    </div>
+
+    <h2>Alerts</h2>
+    <div class="card" id="ntfycard"></div>
+
+    <h2>About</h2>
+    <div class="card" id="about" style="font-size:13px;color:var(--muted)"></div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let S = null, tab = "team", pos = "RB", open = new Set();
+
+function toast(msg){const t=document.createElement("div");t.className="toast";t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),2600)}
+async function post(url, body){
+  const r = await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});
+  let j = {}; try{ j = await r.json() }catch(e){}
+  if(!r.ok || j.ok===false) throw new Error(j.error || ("HTTP "+r.status));
+  return j;
+}
+function ago(ts){ if(!ts) return "never"; const s=Math.round(Date.now()/1000-ts);
+  if(s<60) return "just now"; if(s<3600) return Math.round(s/60)+" min ago"; if(s<86400) return Math.round(s/3600)+" h ago";
+  return new Date(ts*1000).toLocaleDateString([], {month:"short",day:"numeric"}) }
+function kick(ts){ if(!ts) return ""; const d=new Date(ts*1000);
+  return d.toLocaleDateString([], {weekday:"short"})+" "+d.toLocaleTimeString([], {hour:"numeric",minute:"2-digit"}) }
+const ordinal = n => n + (n%100>=11&&n%100<=13 ? "th" : ({1:"st",2:"nd",3:"rd"}[n%10]||"th"));
+const slotCls = s => (s||"").replace("/","").replace("D/ST","DST");
+function injChip(p){ if(!p.injury) return ""; const cls = ["Q","D","P","DTD"].includes(p.injury) ? "q" : "inj"; return `<span class="chip ${cls}">${esc(p.injury)}</span>` }
+
+async function load(){
+  try{
+    const r = await fetch("api/state"); if(!r.ok) throw new Error("HTTP "+r.status);
+    S = await r.json(); render();
+  }catch(e){ $("#statustext").textContent="Can't reach the bot"; $("#dot").className="dot bad" }
+}
+
+function render(){
+  const s = S.snapshot;
+  $("#title").textContent = s ? s.team : "Fantasy Autopilot";
+  $("#dot").className = "dot" + (S.error ? " bad" : S.running ? " busy" : "");
+  $("#statustext").textContent = S.running ? "Checking…" : "Checked " + ago(S.last_run);
+  // banners
+  let b = "";
+  if(S.demo) b += `<div class="banner info">Demo mode: a made-up league. Set DEMO to 0 to use your ESPN team.</div>`;
+  if(S.error) b += `<div class="banner bad">${esc(S.error)}${S.settings.has_cookies?"":`<button onclick="go('settings')">Fix</button>`}</div>`;
+  if(s && s.warnings) s.warnings.forEach(w => b += `<div class="banner warn">${esc(w)}</div>`);
+  const st = S.settings;
+  if(s && !st.auto_lineup && !st.auto_fa) b += `<div class="banner warn">Autopilot is off: the bot only suggests.<button onclick="setAuto(true)">Turn on</button></div>`;
+  $("#banners").innerHTML = b;
+  renderTeam(); renderActivity(); renderPickups(); renderTrades(); renderSettings();
+}
+
+function renderTeam(){
+  const s = S.snapshot;
+  if(!s){ $("#stats").innerHTML=""; $("#roster").innerHTML = `<div class="empty">${S.error?"Waiting for ESPN access.":"Loading your team…"}</div>`; return }
+  const diff = s.opp_proj!=null ? (s.my_proj - s.opp_proj) : null;
+  $("#stats").innerHTML = `
+    <div class="stat"><span>Wk ${s.week} projected</span><b>${s.my_proj.toFixed(1)}</b></div>
+    <div class="stat"><span>Opponent</span><b style="color:${diff==null?'inherit':diff>=0?'var(--accent)':'var(--bad)'}">${s.opp_proj!=null?s.opp_proj.toFixed(1):"—"}</b></div>
+    <div class="stat"><span>${ordinal(s.rank)} of ${s.teams}</span><b>${esc(s.record)}</b></div>`
+    + (s.opponent ? `<div class="sources" style="grid-column:1/-1;margin:0">Playing ${esc(s.opponent)} this week${s.faab?` · $${s.faab_left} FAAB left`:""}</div>` : "");
+  const src = S.sources;
+  $("#sources").innerHTML = src ? "Using: " + src.used.map(esc).join(" · ") +
+    (Object.keys(src.failed||{}).length ? ` <span style="color:var(--warn)">· unavailable: ${Object.keys(src.failed).map(esc).join(", ")}</span>` : "") : "";
+  $("#suggest").innerHTML = (s.suggestions||[]).length ? `<h2>Suggested <small>autopilot is off for these</small></h2><div class="list">${
+    s.suggestions.map(x=>`<div class="act"><span class="ic">💡</span><div>${esc(x)}</div></div>`).join("")}</div>` : "";
+  const groups = [["Starters", s.roster.filter(p=>p.starting)], ["Bench", s.roster.filter(p=>p.slot==="BE")], ["Injured reserve", s.roster.filter(p=>p.slot==="IR")]];
+  $("#roster").innerHTML = groups.filter(g=>g[1].length).map(([name, ps]) =>
+    `<h2>${name}${name==="Starters"?` <small>tap a player for details</small>`:""}</h2><div class="list">${ps.map(playerRow).join("")}</div>`).join("");
+  document.querySelectorAll("#roster .row.tap").forEach(el => el.onclick = () => { const id=+el.dataset.id; open.has(id)?open.delete(id):open.add(id); renderTeam() });
+  document.querySelectorAll("#roster .protect").forEach(el => el.onchange = async e => {
+    e.stopPropagation();
+    try{ await post("api/protect",{id:+el.dataset.id,on:el.checked}); toast(el.checked?"Won't drop him":"Can be dropped again") }catch(err){ toast(err.message) }
+  });
+}
+
+function playerRow(p){
+  const dead = p.bye || ["O","IR","SSPD"].includes(p.injury);
+  const game = p.bye ? "BYE" : `${p.home?"vs":"@"} ${esc(p.opp)} · ${kick(p.kickoff)}`;
+  const pts = p.points!=null ? `<span>${p.points} pts so far</span>` : `<span>${p.locked?"🔒 locked":"projected"}</span>`;
+  let h = `<div class="row tap ${dead&&p.starting?"":dead?"dim":""}" data-id="${p.id}">
+    <div class="slot ${slotCls(p.slot)}">${esc(p.slot)}</div>
+    <div class="main"><div class="name">${esc(p.name)}${injChip(p)}${p.protected?'<span class="chip ok">keep</span>':""}</div>
+      <div class="sub">${esc(p.pos)} · ${esc(p.team)} · ${game}</div></div>
+    <div class="num"><b>${p.adj.toFixed(1)}</b>${pts}</div></div>`;
+  if(open.has(p.id)){
+    const f = v => v==null ? "—" : (+v).toFixed(1);
+    h += `<div class="detail"><div class="grid">
+      <div>ESPN<b>${f(p.espn)}</b></div><div>Sleeper<b>${f(p.sleeper)}</b></div>
+      <div>Last 3 wks<b>${f(p.recent)}</b></div><div>Season<b>${f(p.value)}</b></div></div>
+      ${(p.notes||[]).map(n=>`<div>• ${esc(n)}</div>`).join("")}
+      ${p.env && Math.abs(p.env-1)>0.005 ? `<div>• Matchup adjustment ×${p.env.toFixed(2)}</div>` : ""}
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;color:var(--ink)">
+        <input type="checkbox" class="protect" data-id="${p.id}" ${p.protected?"checked":""}> Never drop this player</label></div>`;
+  }
+  return h;
+}
+
+function renderActivity(){
+  const icon = {lineup:"🔁", add:"➕", claim:"📝", ir:"🩹", error:"⚠️", suggest:"💡"};
+  $("#actions").innerHTML = S.actions.length ? S.actions.map(a => `<div class="act"><span class="ic">${icon[a.kind]||"•"}</span>
+    <div><div>${esc(a.text)}</div><div class="when">Week ${a.week} · ${new Date(a.ts*1000).toLocaleString([], {weekday:"short",hour:"numeric",minute:"2-digit"})}</div></div></div>`).join("")
+    : `<div class="empty">Nothing yet. Changes the bot makes will show up here.</div>`;
+}
+
+function renderPickups(){
+  const s = S.snapshot; if(!s) return;
+  const fa = Object.fromEntries(s.free_agents), positions = s.free_agents.map(x => x[0]);
+  $("#posseg").innerHTML = positions.map(x=>`<button class="${x===pos?"on":""}" data-p="${x}">${x}</button>`).join("");
+  document.querySelectorAll("#posseg button").forEach(b=>b.onclick=()=>{pos=b.dataset.p;renderPickups()});
+  const list = fa[pos]||[];
+  $("#fas").innerHTML = list.length ? list.map(p => `<div class="row">
+    <div class="slot ${slotCls(p.pos)}">${esc(p.pos)}</div>
+    <div class="main"><div class="name">${esc(p.name)}${injChip(p)}${p.trending?'<span class="chip hot">🔥</span>':""}${p.status==="WAIVERS"?'<span class="chip">waivers</span>':""}</div>
+      <div class="sub">${esc(p.team)} · ${p.bye?"BYE":(p.home?"vs ":"@ ")+esc(p.opp)} · ${p.owned.toFixed(0)}% owned</div></div>
+    <div class="num"><b>${p.value.toFixed(1)}</b><span>${p.adj.toFixed(1)} this wk</span></div></div>`).join("")
+    : `<div class="empty">No one worth listing.</div>`;
+}
+
+function renderTrades(){
+  const t = S.trades||[];
+  $("#trades").innerHTML = t.length ? t.map(x => `<div class="card"><h3>${esc(x.team)}</h3>
+    <div class="trade"><div class="side"><span>You give</span>${x.give.map(p=>`<div>${esc(p.name)} <span style="display:inline">${esc(p.pos)}</span></div>`).join("")}</div>
+      <div class="arrow">⇄</div>
+      <div class="side"><span>You get</span>${x.get.map(p=>`<div>${esc(p.name)} <span style="display:inline">${esc(p.pos)}</span></div>`).join("")}</div></div>
+    <p>${esc(x.why)}</p></div>`).join("")
+    : `<div class="card"><p style="margin:0">No win-win trades right now. Ideas refresh every few hours.</p></div>`;
+}
+
+const TOGGLES = [
+  ["auto_lineup","Set my lineup","Start the best players, bench injured/bye, late swaps"],
+  ["auto_fa","Make pickups","Fill holes and add better free agents (drops your weakest bench player)"],
+  ["stream_kdst","Stream kicker & defense","Swap K/DST weekly for a much better matchup"],
+  ["upgrades","Season-long upgrades","At most one per day, never right before games"],
+  ["use_ir","Use the IR spot","Move players on injured reserve to IR to free a bench spot"],
+  ["notify_moves","Alert me about changes","Push notification for each move"],
+  ["notify_trades","Weekly trade idea","Tuesday morning push with the best trade idea"],
+];
+let settingsDrawn = false;
+function renderSettings(){
+  const st = S.settings;
+  $("#cookiestate").innerHTML = st.has_cookies
+    ? `<div class="banner info" style="margin:0">Codes saved${st.swid_hint?` (SWID ${esc(st.swid_hint)}…)`:""}. Paste new ones only if ESPN stops working.</div>`
+    : `<div class="banner warn" style="margin:0">Needed before the bot can see or change your team.</div>`;
+  if(!st.has_cookies) $("#cookiehelp").open = true;
+  if(settingsDrawn) return;
+  settingsDrawn = true;
+  $("#toggles").innerHTML = TOGGLES.map(([k,t,d]) => `<div class="toggle"><div class="t"><b>${t}</b><span>${d}</span></div>
+    <label class="switch"><input type="checkbox" data-k="${k}" ${st[k]?"checked":""}><i></i></label></div>`).join("");
+  document.querySelectorAll("#toggles input").forEach(i => i.onchange = () => save({[i.dataset.k]: i.checked}));
+  $("#questionable").value = st.questionable; $("#questionable").onchange = e => save({questionable:e.target.value});
+  $("#max_adds_week").value = st.max_adds_week; $("#max_adds_week").onchange = e => save({max_adds_week:+e.target.value});
+  $("#faab_pct").value = st.faab_pct; $("#faab_pct").onchange = e => save({faab_pct:+e.target.value});
+  if(S.snapshot && !S.snapshot.faab) $("#faabrow").classList.add("hide");
+  $("#ntfycard").innerHTML = S.ntfy
+    ? `<div style="display:flex;align-items:center;gap:10px"><div style="flex:1;font-size:14px">Phone alerts are set up.</div><button class="btn sec" id="testn">Send test</button></div>`
+    : `<div style="font-size:14px">Phone alerts are off. Install the free <b>ntfy</b> app, subscribe to a long random topic name, and put <code>https://ntfy.sh/that-name</code> in <code>NTFY_URL</code> in the compose file.</div>`;
+  const tb = $("#testn"); if(tb) tb.onclick = async () => { try{ await post("api/test-notify"); toast("Sent") }catch(e){ toast(e.message) } };
+  $("#about").innerHTML = `League ${S.league_id||"—"} · team ${S.team_id||"—"} · season ${S.season}<br>Checks ESPN every ${S.poll_minutes} minutes.`;
+  $("#savecookies").onclick = async () => {
+    const s2 = $("#s2").value.trim(), sw = $("#swid").value.trim();
+    if(!s2 || !sw){ toast("Paste both codes"); return }
+    try{ await post("api/settings",{espn_s2:s2, swid:sw}); $("#s2").value=""; $("#swid").value=""; toast("Saved. Checking ESPN…"); setTimeout(load, 4000) }
+    catch(e){ toast(e.message) }
+  };
+}
+async function save(o){ try{ await post("api/settings", o); Object.assign(S.settings, o); toast("Saved") }catch(e){ toast(e.message) } }
+async function setAuto(on){ await save({auto_lineup:on, auto_fa:on}); settingsDrawn=false; render() }
+
+function go(t){ tab=t; document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("on", b.dataset.tab===t));
+  document.querySelectorAll("main section").forEach(s=>s.classList.toggle("hide", s.id!=="tab-"+t)); window.scrollTo(0,0) }
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => go(b.dataset.tab));
+$("#runbtn").onclick = async () => { try{ await post("api/run"); toast("Checking ESPN…"); setTimeout(load, 5000) }catch(e){ toast(e.message) } };
+load(); setInterval(load, 60000);
+</script>
+</body>
+</html>
